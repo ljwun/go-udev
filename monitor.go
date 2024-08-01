@@ -1,3 +1,4 @@
+//go:build linux && cgo
 // +build linux,cgo
 
 package udev
@@ -13,6 +14,7 @@ import "C"
 import (
 	"context"
 	"errors"
+	"fmt"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -133,7 +135,7 @@ func (m *Monitor) receiveDevice() (d *Device) {
 // channel. The function takes a context as argument, which when done will stop
 // the goroutine and close the device channel. Only socket connections with
 // uid=0 are accepted.
-func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, error) {
+func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, <-chan error, error) {
 
 	var event unix.EpollEvent
 	var events [maxEpollEvents]unix.EpollEvent
@@ -144,30 +146,31 @@ func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, error) {
 
 	// Enable receiving
 	if C.udev_monitor_enable_receiving(m.ptr) != 0 {
-		return nil, errors.New("udev: udev_monitor_enable_receiving failed")
+		return nil, nil, errors.New("udev: udev_monitor_enable_receiving failed")
 	}
 
 	// Set the fd to non-blocking
 	fd := C.udev_monitor_get_fd(m.ptr)
 	if e := unix.SetNonblock(int(fd), true); e != nil {
-		return nil, errors.New("udev: unix.SetNonblock failed")
+		return nil, nil, errors.New("udev: unix.SetNonblock failed")
 	}
 
 	// Create an epoll fd
 	epfd, e := unix.EpollCreate1(0)
 	if e != nil {
-		return nil, errors.New("udev: unix.EpollCreate1 failed")
+		return nil, nil, errors.New("udev: unix.EpollCreate1 failed")
 	}
 
 	// Add the fd to the epoll fd
 	event.Events = unix.EPOLLIN | unix.EPOLLET
 	event.Fd = int32(fd)
 	if e = unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, int(fd), &event); e != nil {
-		return nil, errors.New("udev: unix.EpollCtl failed")
+		return nil, nil, errors.New("udev: unix.EpollCtl failed")
 	}
 
-	// Create the channel
+	// Create the device and error channels
 	ch := make(chan *Device)
+	errorChannel := make(chan error)
 
 	// Create goroutine to epoll the fd
 	go func(fd int32) {
@@ -175,6 +178,7 @@ func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, error) {
 		defer unix.Close(epfd)
 		// Close the channel when goroutine exits
 		defer close(ch)
+		defer close(errorChannel)
 		// Loop forever
 		for {
 			// Poll the file descriptor
@@ -183,6 +187,7 @@ func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, error) {
 			// context's Done() channel
 			errno, isErrno := e.(syscall.Errno)
 			if (e != nil && !isErrno) || (isErrno && errno != syscall.EINTR) {
+				errorChannel <- fmt.Errorf("Error during EpollWait: %s", errno.Error())
 				return
 			}
 			// Check for done signal
@@ -204,5 +209,5 @@ func (m *Monitor) DeviceChan(ctx context.Context) (<-chan *Device, error) {
 		}
 	}(int32(fd))
 
-	return ch, nil
+	return ch, errorChannel, nil
 }
