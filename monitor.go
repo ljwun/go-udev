@@ -4,7 +4,7 @@
 package udev
 
 /*
-  #cgo LDFLAGS: -ludev
+  #cgo pkg-config: libudev
   #include <libudev.h>
   #include <linux/types.h>
   #include <stdlib.h>

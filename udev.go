@@ -1,10 +1,11 @@
+//go:build linux && cgo
 // +build linux,cgo
 
 // Package udev provides a cgo wrapper around the libudev C library
 package udev
 
 /*
-  #cgo LDFLAGS: -ludev
+  #cgo pkg-config: libudev
   #include <libudev.h>
   #include <linux/types.h>
   #include <stdlib.h>
